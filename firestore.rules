@@ -1,0 +1,233 @@
+rules_version = '2';
+
+// Règles de sécurité Firestore — Caisse MAYUNDO Party
+// À copier dans la console Firebase : Firestore Database → Rules → Publier
+//
+// Principe : l'application n'a pas de serveur. Ces règles sont donc la SEULE
+// barrière réellement opposable — un utilisateur connecté peut toujours
+// appeler Firestore directement, sans passer par l'interface. Tout ce qui est
+// vérifié dans le JavaScript est donc revérifié ici : qui écrit, mais aussi
+// QUOI (montants, devises, plafonds, champs modifiables).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Identité et rôles ----------
+
+    function estConnecte() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return get(/databases/$(database)/documents/utilisateurs/$(request.auth.uid)).data.role;
+    }
+
+    function estSuperAdmin() { return estConnecte() && role() == 'super_admin'; }
+    function estAdmin()      { return estConnecte() && role() == 'admin'; }
+    function estCaissier()   { return estConnecte() && role() == 'caissier'; }
+    function estLectureSeule() {
+      return estConnecte() && role() in ['president', 'cp', 'membre'];
+    }
+
+    function rolesCreablesParAdmin() {
+      return ['caissier', 'president', 'cp', 'membre'];
+    }
+
+    // L'e-mail écrit dans un document doit être celui du compte connecté :
+    // empêche d'attribuer ses propres écritures à quelqu'un d'autre.
+    function sonPropreEmail(email) {
+      return email == request.auth.token.email;
+    }
+
+    // ---------- Validation des montants ----------
+
+    // Plafond, en dollars, de chaque type de frais (miroir de
+    // src/constants/typesFrais.js). Un paiement ne peut jamais dépasser à lui
+    // seul le montant total du frais concerné.
+    function plafondFrais(typeFraisId) {
+      return typeFraisId == 'fete' ? 10
+        : typeFraisId == 'tshirt' ? 5
+        : typeFraisId == 'defense' ? 5
+        : typeFraisId == 'comite' ? 30
+        : 0;
+    }
+
+    function montantValide(d) {
+      return d.montant is number && d.montant > 0
+        && d.montantUSD is number && d.montantUSD > 0
+        && d.devise in ['USD', 'CDF']
+        && d.annule == false;
+    }
+
+    // Une demande de correction est-elle accordée pour l'opération {id} ?
+    // (la demande porte volontairement le même identifiant que l'opération)
+    function correctionAccordee(id) {
+      return exists(/databases/$(database)/documents/demandesCorrection/$(id)) &&
+        get(/databases/$(database)/documents/demandesCorrection/$(id)).data.statut == 'accordee';
+    }
+
+    // ---------- Comptes utilisateurs ----------
+    // Gérés uniquement par l'admin et le super admin. Chacun peut lire son
+    // propre document (pour connaître son rôle après connexion).
+    // L'admin ne peut ni créer un super_admin, ni toucher un compte caissier
+    // (seul le super admin le peut). Personne ne peut se donner un rôle :
+    // sans document "utilisateurs", role() échoue et toutes les écritures sont
+    // refusées — un compte fraîchement créé ne peut donc pas s'auto-promouvoir.
+    match /utilisateurs/{uid} {
+      allow read: if estConnecte() && (
+        request.auth.uid == uid || estAdmin() || estSuperAdmin() || estCaissier() || estLectureSeule()
+      );
+      allow create: if (estSuperAdmin() ||
+          (estAdmin() && request.resource.data.role in rolesCreablesParAdmin()))
+        && request.resource.data.nom is string
+        && request.resource.data.email is string;
+      allow update: if estSuperAdmin() ||
+        (estAdmin() &&
+          resource.data.role != 'caissier' &&
+          resource.data.role != 'super_admin' &&
+          request.resource.data.role in rolesCreablesParAdmin());
+      allow delete: if estSuperAdmin() ||
+        (estAdmin() && resource.data.role != 'caissier' && resource.data.role != 'super_admin');
+    }
+
+    // ---------- Personnes payantes ----------
+    match /personnes/{id} {
+      allow read: if estCaissier() || estAdmin() || estSuperAdmin() || estLectureSeule();
+      allow create: if (estCaissier() || estAdmin())
+        && request.resource.data.nom is string
+        && request.resource.data.nom.size() > 0
+        && request.resource.data.email is string;
+      allow update: if estAdmin() || estSuperAdmin();
+      allow delete: if estAdmin() || estSuperAdmin();
+    }
+
+    // ---------- Paiements ----------
+    // Création : par un caissier, en son nom, avec un montant positif qui ne
+    // dépasse pas le plafond du frais concerné, et daté par le serveur.
+    // Modification : JAMAIS à l'initiative de quelqu'un. Même un admin ne peut
+    // corriger un paiement que si le caissier a signalé une erreur ET que la
+    // demande correspondante est passée au statut 'accordee'. Les champs
+    // modifiables sont limités : impossible de réattribuer un paiement à une
+    // autre personne, un autre frais ou un autre caissier.
+    match /paiements/{id} {
+      allow read: if estCaissier() || estAdmin() || estSuperAdmin() || estLectureSeule();
+
+      allow create: if estCaissier()
+        && request.resource.data.caissierId == request.auth.uid
+        && sonPropreEmail(request.resource.data.caissierEmail)
+        && request.resource.data.personneId is string
+        && request.resource.data.personneNom is string
+        && request.resource.data.typeFraisId in ['fete', 'tshirt', 'defense', 'comite']
+        && montantValide(request.resource.data)
+        && request.resource.data.montantUSD <= plafondFrais(request.resource.data.typeFraisId) + 0.01
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if (estAdmin() || estSuperAdmin())
+        && correctionAccordee(id)
+        && request.resource.data.montantUSD is number
+        && request.resource.data.montantUSD > 0
+        && request.resource.data.montantUSD <= plafondFrais(resource.data.typeFraisId) + 0.01
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'montant', 'devise', 'montantUSD',
+          'montantCorrige', 'deviseCorrigee', 'montantUSDCorrige',
+          'corrige', 'annule',
+          'ancienMontant', 'ancienneDevise', 'ancienMontantUSD',
+          'correctionMotif', 'correctionParEmail', 'correctionDate'
+        ]);
+
+      allow delete: if estSuperAdmin();
+    }
+
+    // ---------- Sorties de caisse ----------
+    // Mêmes règles que les paiements. Une sortie n'est jamais supprimable :
+    // une dépense enregistrée reste dans les comptes, corrigée si besoin.
+    match /sorties/{id} {
+      allow read: if estCaissier() || estAdmin() || estSuperAdmin() || estLectureSeule();
+
+      allow create: if estCaissier()
+        && request.resource.data.caissierId == request.auth.uid
+        && sonPropreEmail(request.resource.data.caissierEmail)
+        && request.resource.data.motif is string
+        && request.resource.data.motif.size() > 0
+        && montantValide(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if (estAdmin() || estSuperAdmin())
+        && correctionAccordee(id)
+        && request.resource.data.montantUSD is number
+        && request.resource.data.montantUSD > 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'montant', 'devise', 'montantUSD',
+          'corrige', 'annule',
+          'ancienMontant', 'ancienneDevise', 'ancienMontantUSD',
+          'correctionMotif', 'correctionParEmail', 'correctionDate'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // ---------- Demandes de correction ----------
+    // Le caissier signale une erreur sur SA propre opération, sans jamais
+    // proposer de montant : c'est l'admin qui saisit le montant correct.
+    // Un caissier ne voit que ses propres demandes, et ne peut ni s'accorder
+    // une correction, ni modifier une demande déjà traitée. Seule reprise
+    // autorisée de son côté : redéposer une demande après un refus.
+    match /demandesCorrection/{id} {
+      // "get" tolère le document absent (resource == null) : le caissier
+      // vérifie qu'aucune demande n'existe déjà avant d'en créer une.
+      allow get: if estAdmin() || estSuperAdmin() ||
+        (estCaissier() && (resource == null || resource.data.caissierId == request.auth.uid));
+      allow list: if estAdmin() || estSuperAdmin() ||
+        (estCaissier() && resource.data.caissierId == request.auth.uid);
+
+      allow create: if estCaissier()
+        && request.resource.data.caissierId == request.auth.uid
+        && sonPropreEmail(request.resource.data.caissierEmail)
+        && request.resource.data.entiteId == id
+        && request.resource.data.type in ['paiement', 'sortie']
+        && request.resource.data.statut == 'en_attente'
+        && request.resource.data.createdAt == request.time;
+
+      allow update: if estAdmin() || estSuperAdmin() ||
+        (estCaissier() &&
+          resource.data.caissierId == request.auth.uid &&
+          resource.data.statut == 'refusee' &&
+          request.resource.data.statut == 'en_attente');
+
+      allow delete: if false;
+    }
+
+    // ---------- Paramètres de l'événement ----------
+    // Lisibles par tout utilisateur authentifié (ils alimentent les e-mails),
+    // modifiables par le seul super admin.
+    match /parametres/{id} {
+      allow read: if estConnecte();
+      allow write: if estSuperAdmin();
+    }
+
+    // ---------- Journal d'audit ----------
+    // Chacun ne peut journaliser QUE ses propres actions, sous sa propre
+    // identité, à l'heure du serveur. Une ligne écrite ne peut plus jamais
+    // être modifiée ni supprimée, par personne — y compris le super admin.
+    match /auditLog/{id} {
+      allow create: if estConnecte()
+        && request.resource.data.utilisateurId == request.auth.uid
+        && sonPropreEmail(request.resource.data.utilisateurEmail)
+        && request.resource.data.typeAction in ['ajout', 'modification', 'suppression']
+        && request.resource.data.cible is string
+        && request.resource.data.date == request.time;
+      allow read: if estSuperAdmin();
+      allow update, delete: if false;
+    }
+
+    // ---------- Historique des connexions ----------
+    match /connexions/{id} {
+      allow create: if estConnecte()
+        && request.resource.data.utilisateurId == request.auth.uid
+        && sonPropreEmail(request.resource.data.utilisateurEmail)
+        && request.resource.data.date == request.time;
+      allow read: if estSuperAdmin();
+      allow update, delete: if false;
+    }
+  }
+}

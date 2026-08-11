@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-CimInstance Win32_OperatingSystem | Select-Object @{n='FreeGB';e={[math]::Round\\($_.FreePhysicalMemory/1MB,2\\)}}, @{n='TotalGB';e={[math]::Round\\($_.TotalVisibleMemorySize/1MB,2\\)}})",
+      "Bash(npx vite *)",
+      "Bash(npx eslint *)",
+      "Bash(node -e ' *)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5199/_smoke.html)",
+      "Bash(pkill -f \"vite --port 5199\")"
+    ]
+  }
+}
