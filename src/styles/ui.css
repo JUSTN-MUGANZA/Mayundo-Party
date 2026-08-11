@@ -689,6 +689,17 @@
   touch-action: manipulation;
 }
 
+/* Bouton d'action à l'intérieur d'une cellule de tableau : la taille tactile
+   par défaut (48px) ferait exploser la hauteur de chaque ligne. */
+.btn-compact {
+  padding: 7px 12px;
+  min-height: 36px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .btn-primary {
   background: var(--color-primary);
   color: white;

@@ -5,7 +5,15 @@ import {
   supprimerPersonneEtHistorique,
 } from "../services/caisseService";
 import { exporterExcel, exporterPDF } from "../services/exportService";
+import {
+  preparerExportPersonnes,
+  CATEGORIE_COMITE,
+  CATEGORIE_INVITE,
+} from "../services/rapportsExport";
 import SectionRepliable from "./SectionRepliable";
+import CelluleInvitation from "./CelluleInvitation";
+import { TYPES_FRAIS } from "../constants/typesFrais";
+import { FILTRES_INVITATION } from "../constants/invitation";
 
 async function chargerRapport() {
   const [personnes, totauxCategorie] = await Promise.all([
@@ -17,9 +25,12 @@ async function chargerRapport() {
 
 // Passe superAdmin = { uid, email } depuis l'espace super admin pour activer
 // le bouton de suppression complète d'une personne — non affiché ailleurs.
-export default function RapportPersonnes({ superAdmin }) {
+export default function RapportPersonnes({ superAdmin, utilisateur }) {
   const [donnees, setDonnees] = useState(null);
   const [filtreCategorie, setFiltreCategorie] = useState("toutes");
+  const [filtreFrais, setFiltreFrais] = useState("tous");
+  const [filtreInvitation, setFiltreInvitation] = useState("tous");
+  const [recherche, setRecherche] = useState("");
   const [confirmationSuppression, setConfirmationSuppression] = useState(null);
 
   const chargement = donnees === null;
@@ -40,55 +51,39 @@ export default function RapportPersonnes({ superAdmin }) {
     setDonnees(await chargerRapport());
   }
 
+  // Filtres cumulables : catégorie, frais concerné, état de l'invitation, nom.
   const personnesFiltrees = useMemo(() => {
-    if (filtreCategorie === "toutes") return personnes;
-    return personnes.filter((p) => p.categorie === filtreCategorie);
-  }, [personnes, filtreCategorie]);
+    const nom = recherche.trim().toLowerCase();
+    return personnes.filter((p) => {
+      if (filtreCategorie !== "toutes" && p.categorie !== filtreCategorie) return false;
+      if (filtreInvitation !== "tous" && p.statutInvitation !== filtreInvitation) return false;
+      if (filtreFrais !== "tous") {
+        // "Trier par frais" = ne garder que les personnes qui ont réellement
+        // versé quelque chose sur ce frais.
+        const frais = p.detailFrais.find((f) => f.id === filtreFrais);
+        if (!frais || frais.paye <= 0) return false;
+      }
+      if (nom && !p.nom.toLowerCase().includes(nom)) return false;
+      return true;
+    });
+  }, [personnes, filtreCategorie, filtreFrais, filtreInvitation, recherche]);
 
-  const colonnesExport = [
-    { cle: "nom", titre: "Nom" },
-    { cle: "email", titre: "E-mail" },
-    { cle: "categorie", titre: "Catégorie" },
-    { cle: "amenePar", titre: "Amené par (membre)" },
-    { cle: "fete", titre: "Fête" },
-    { cle: "tshirt", titre: "T-shirt" },
-    { cle: "defense", titre: "Défense" },
-    { cle: "comite", titre: "Frais de comité" },
-    { cle: "statut", titre: "Statut" },
-    { cle: "totalGeneral", titre: "Total payé ($)" },
-  ];
-
-  // Montants repérés par l'identifiant du frais et non par son libellé :
-  // renommer un libellé ne doit pas vider une colonne de l'export.
-  function ligneExport(p) {
-    const parType = Object.fromEntries(
-      p.detailFrais.map((f) => [f.id, `${f.paye.toFixed(2)} $ (${f.statut})`])
-    );
-    return {
-      nom: p.nom,
-      email: p.email || "—",
-      categorie: p.categorie,
-      amenePar: p.amenePar || "—",
-      fete: parType.fete,
-      tshirt: parType.tshirt,
-      defense: parType.defense,
-      comite: parType.comite,
-      statut: p.statutGlobal,
-      totalGeneral: Number(p.totalGeneral.toFixed(2)),
-    };
+  // Les exports par catégorie portent sur TOUTES les personnes de la catégorie,
+  // indépendamment des filtres d'affichage ci-dessous.
+  async function exporterCategorie(categorie, format) {
+    const params = preparerExportPersonnes({ personnes, categorie });
+    if (format === "excel") await exporterExcel(params);
+    else await exporterPDF(params);
   }
 
-  async function exporterCategorie(categorie, format) {
-    const lignes = (categorie === "toutes" ? personnes : personnes.filter((p) => p.categorie === categorie)).map(
-      ligneExport
-    );
-    const params = {
-      nomFichier: categorie === "Membre du comité" ? "membres-du-comite" : categorie === "toutes" ? "personnes-ayant-paye" : "etudiants-invites",
-      colonnes: colonnesExport,
-      lignes,
-    };
+  // Export de ce qui est réellement affiché, filtres compris.
+  async function exporterAffichage(format) {
+    const params = preparerExportPersonnes({
+      personnes: personnesFiltrees,
+      categorie: filtreCategorie,
+    });
     if (format === "excel") await exporterExcel(params);
-    else await exporterPDF({ ...params, titre: `${params.nomFichier.replace(/-/g, " ")} — MAYUNDO Party` });
+    else await exporterPDF(params);
   }
 
   async function handleSupprimer(personne) {
@@ -124,46 +119,94 @@ export default function RapportPersonnes({ superAdmin }) {
 
       <div className="export-buttons-grid">
         <div className="export-buttons-group">
-          <span className="field-hint">Étudiants / invités</span>
+          <span className="field-hint">
+            Étudiants / invités <em>(sans la colonne comité)</em>
+          </span>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("Étudiant / invité", "excel")}>
+            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "excel")}>
               Excel
             </button>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("Étudiant / invité", "pdf")}>
+            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "pdf")}>
               PDF
             </button>
           </div>
         </div>
         <div className="export-buttons-group">
-          <span className="field-hint">Membres du comité</span>
+          <span className="field-hint">
+            Membres du comité <em>(sans fête / t-shirt / défense)</em>
+          </span>
           <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("Membre du comité", "excel")}>
+            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "excel")}>
               Excel
             </button>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("Membre du comité", "pdf")}>
+            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "pdf")}>
+              PDF
+            </button>
+          </div>
+        </div>
+        <div className="export-buttons-group">
+          <span className="field-hint">
+            Export général <em>(toutes colonnes, en paysage)</em>
+          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "excel")}>
+              Excel
+            </button>
+            <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "pdf")}>
               PDF
             </button>
           </div>
         </div>
       </div>
 
-      <div className="form-row" style={{ marginBottom: 16 }}>
+      <div className="form-row" style={{ marginBottom: 8 }}>
         <label className="field">
-          <span>Filtrer l'affichage ci-dessous par catégorie</span>
+          <span>Rechercher un nom</span>
+          <input
+            type="text"
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            placeholder="Nom de la personne..."
+          />
+        </label>
+        <label className="field">
+          <span>Catégorie</span>
           <select value={filtreCategorie} onChange={(e) => setFiltreCategorie(e.target.value)}>
             <option value="toutes">Toutes les personnes</option>
-            <option value="Membre du comité">Membres du comité</option>
-            <option value="Étudiant / invité">Étudiants / invités</option>
+            <option value={CATEGORIE_COMITE}>Membres du comité</option>
+            <option value={CATEGORIE_INVITE}>Étudiants / invités</option>
           </select>
         </label>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => exporterCategorie(filtreCategorie, "excel")}>
-            Exporter l'affichage (Excel)
-          </button>
-          <button className="btn btn-primary" onClick={() => exporterCategorie(filtreCategorie, "pdf")}>
-            Exporter l'affichage (PDF)
-          </button>
-        </div>
+        <label className="field">
+          <span>Frais</span>
+          <select value={filtreFrais} onChange={(e) => setFiltreFrais(e.target.value)}>
+            <option value="tous">Tous les frais</option>
+            {TYPES_FRAIS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Invitation</span>
+          <select value={filtreInvitation} onChange={(e) => setFiltreInvitation(e.target.value)}>
+            {FILTRES_INVITATION.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("excel")}>
+          Exporter l'affichage filtré (Excel)
+        </button>
+        <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("pdf")}>
+          Exporter l'affichage filtré (PDF)
+        </button>
       </div>
 
       <SectionRepliable
@@ -185,6 +228,7 @@ export default function RapportPersonnes({ superAdmin }) {
                 <th>Amené par</th>
                 <th>Détail des frais</th>
                 <th>Statut</th>
+                <th>Invitation</th>
                 <th style={{ textAlign: "right" }}>Total payé</th>
                 {superAdmin && <th></th>}
               </tr>
@@ -221,6 +265,14 @@ export default function RapportPersonnes({ superAdmin }) {
                     >
                       {p.statutGlobal}
                     </span>
+                  </td>
+                  <td>
+                    <CelluleInvitation
+                      personne={p}
+                      utilisateur={utilisateur || superAdmin}
+                      peutDonner={Boolean(utilisateur || superAdmin)}
+                      onChange={rafraichir}
+                    />
                   </td>
                   <td className="ledger-amount in">{p.totalGeneral.toFixed(2)} $</td>
                   {superAdmin && (

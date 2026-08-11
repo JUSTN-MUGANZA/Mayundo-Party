@@ -29,6 +29,12 @@ service cloud.firestore {
       return estConnecte() && role() in ['president', 'cp', 'membre'];
     }
 
+    // Président et CP : lecture seule sur les comptes, mais ce sont eux qui
+    // remettent physiquement les billets d'entrée (voir /personnes).
+    function remetLesInvitations() {
+      return estConnecte() && role() in ['president', 'cp'];
+    }
+
     function rolesCreablesParAdmin() {
       return ['caissier', 'president', 'cp', 'membre'];
     }
@@ -97,7 +103,18 @@ service cloud.firestore {
         && request.resource.data.nom is string
         && request.resource.data.nom.size() > 0
         && request.resource.data.email is string;
-      allow update: if estAdmin() || estSuperAdmin();
+      // Remise d'une invitation : le caissier, le président et le CP peuvent
+      // la constater, mais RIEN d'autre — ni le nom, ni l'e-mail, ni un
+      // quelconque montant. La remise est irréversible (on ne repasse pas à
+      // false) et signée par le compte qui l'effectue.
+      allow update: if estAdmin() || estSuperAdmin() ||
+        ((estCaissier() || remetLesInvitations())
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['invitationDistribuee', 'invitationDate', 'invitationParEmail'])
+          && request.resource.data.invitationDistribuee == true
+          && request.resource.data.invitationDate == request.time
+          && sonPropreEmail(request.resource.data.invitationParEmail));
+
       allow delete: if estAdmin() || estSuperAdmin();
     }
 

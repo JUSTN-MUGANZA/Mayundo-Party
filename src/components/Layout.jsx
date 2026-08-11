@@ -62,6 +62,7 @@ export default function Layout({
       case "cp":
         return [
           { to: "/consultation#vue-ensemble", label: "Vue d'ensemble" },
+          { to: "/consultation#invitations", label: "Invitations" },
           { to: "/consultation#mouvements-recents", label: "Mouvements" },
         ];
       case "membre":

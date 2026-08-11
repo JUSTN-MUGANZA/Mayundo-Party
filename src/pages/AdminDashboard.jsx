@@ -99,7 +99,7 @@ export default function AdminDashboard() {
 
         <div className={`mobile-tab-panel${ongletMobile === "rapports" ? " active" : ""}`}>
           <section id="rapport-personnes" className="dashboard-section-anchor">
-            <RapportPersonnes />
+            <RapportPersonnes utilisateur={user} />
           </section>
         </div>
 

@@ -22,6 +22,15 @@ import {
 } from "../services/caisseService";
 import VueEnsembleCard from "../components/VueEnsembleCard";
 import SectionRepliable from "../components/SectionRepliable";
+import CelluleInvitation from "../components/CelluleInvitation";
+import { FILTRES_INVITATION } from "../constants/invitation";
+import { exporterPDF, exporterExcel } from "../services/exportService";
+import {
+  preparerExportEncaissementsCaissier,
+  agregerEncaissementsParPersonne,
+  CATEGORIE_COMITE,
+  CATEGORIE_INVITE,
+} from "../services/rapportsExport";
 import {
   formatDateCourte,
   libelleDevise,
@@ -81,6 +90,8 @@ export default function CaissierDashboard() {
   const [donnees, setDonnees] = useState(null);
   const [erreurChargement, setErreurChargement] = useState(null);
   const [recherche, setRecherche] = useState("");
+  const [filtreFrais, setFiltreFrais] = useState("tous");
+  const [filtreInvitation, setFiltreInvitation] = useState("tous");
 
   const chargement = donnees === null && !erreurChargement;
 
@@ -112,16 +123,24 @@ export default function CaissierDashboard() {
   const filtre = recherche.trim().toLowerCase();
 
   const personnesServiesFiltrees = useMemo(() => {
-    const liste = donnees?.personnesServies || [];
-    if (!filtre) return liste;
-    return liste.filter((p) => p.nom.toLowerCase().includes(filtre));
-  }, [donnees, filtre]);
+    return (donnees?.personnesServies || []).filter((p) => {
+      if (filtre && !p.nom.toLowerCase().includes(filtre)) return false;
+      if (filtreInvitation !== "tous" && p.statutInvitation !== filtreInvitation) return false;
+      if (filtreFrais !== "tous") {
+        const frais = p.detailFrais.find((f) => f.id === filtreFrais);
+        if (!frais || frais.paye <= 0) return false;
+      }
+      return true;
+    });
+  }, [donnees, filtre, filtreFrais, filtreInvitation]);
 
   const paiementsFiltres = useMemo(() => {
-    const liste = donnees?.paiements || [];
-    if (!filtre) return liste;
-    return liste.filter((p) => (p.personneNom || "").toLowerCase().includes(filtre));
-  }, [donnees, filtre]);
+    return (donnees?.paiements || []).filter((p) => {
+      if (filtre && !(p.personneNom || "").toLowerCase().includes(filtre)) return false;
+      if (filtreFrais !== "tous" && p.typeFraisId !== filtreFrais) return false;
+      return true;
+    });
+  }, [donnees, filtre, filtreFrais]);
 
   const sortiesFiltrees = useMemo(() => {
     const liste = donnees?.sorties || [];
@@ -184,15 +203,49 @@ export default function CaissierDashboard() {
               opérations.
             </p>
 
-            <label className="field" style={{ maxWidth: 320, marginBottom: 16 }}>
-              <span>Rechercher</span>
-              <input
-                type="text"
-                value={recherche}
-                onChange={(e) => setRecherche(e.target.value)}
-                placeholder="Nom d'une personne, motif d'une sortie..."
+            <div className="form-row" style={{ marginBottom: 12 }}>
+              <label className="field">
+                <span>Rechercher</span>
+                <input
+                  type="text"
+                  value={recherche}
+                  onChange={(e) => setRecherche(e.target.value)}
+                  placeholder="Nom d'une personne, motif d'une sortie..."
+                />
+              </label>
+              <label className="field">
+                <span>Frais</span>
+                <select value={filtreFrais} onChange={(e) => setFiltreFrais(e.target.value)}>
+                  <option value="tous">Tous les frais</option>
+                  {TYPES_FRAIS.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Invitation</span>
+                <select
+                  value={filtreInvitation}
+                  onChange={(e) => setFiltreInvitation(e.target.value)}
+                >
+                  {FILTRES_INVITATION.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {!chargement && !erreurChargement && (
+              <ExportsCaissier
+                paiements={donnees.paiements}
+                personnesServies={donnees.personnesServies}
+                caissier={user}
               />
-            </label>
+            )}
 
             {erreurChargement ? (
               <p className="alert alert-error">{messageErreurChargement(erreurChargement)}</p>
@@ -200,7 +253,11 @@ export default function CaissierDashboard() {
               <p className="empty-state">Chargement...</p>
             ) : (
               <>
-                <TablePersonnesServies personnes={personnesServiesFiltrees} />
+                <TablePersonnesServies
+                  personnes={personnesServiesFiltrees}
+                  caissier={user}
+                  onChange={rafraichirDonnees}
+                />
                 <TableMesPaiements
                   paiements={paiementsFiltres}
                   demandesParEntite={donnees.demandesParEntite}
@@ -227,7 +284,71 @@ export default function CaissierDashboard() {
 
 // Situation complète des personnes encaissées par ce caissier. Chaque colonne
 // de frais affiche le CUMUL de toutes les tranches versées, pas la première.
-function TablePersonnesServies({ personnes }) {
+// Boutons d'export du caissier : uniquement SES encaissements, séparés en
+// invités et membres du comité. Le total du document correspond exactement à
+// sa vue d'ensemble personnelle.
+function ExportsCaissier({ paiements, personnesServies, caissier }) {
+  const agregees = useMemo(
+    () => agregerEncaissementsParPersonne(paiements, personnesServies),
+    [paiements, personnesServies]
+  );
+
+  async function exporter(categorie, format) {
+    const params = preparerExportEncaissementsCaissier({
+      personnes: agregees,
+      categorie,
+      caissierEmail: caissier.email,
+    });
+    if (format === "excel") await exporterExcel(params);
+    else await exporterPDF(params);
+  }
+
+  const nbInvites = agregees.filter((p) => p.categorie === CATEGORIE_INVITE).length;
+  const nbComite = agregees.filter((p) => p.categorie === CATEGORIE_COMITE).length;
+
+  return (
+    <div className="export-buttons-grid" style={{ marginBottom: 16 }}>
+      <div className="export-buttons-group">
+        <span className="field-hint">Mes encaissements — invités ({nbInvites})</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-primary btn-compact"
+            onClick={() => exporter(CATEGORIE_INVITE, "pdf")}
+          >
+            PDF
+          </button>
+          <button
+            className="btn btn-primary btn-compact"
+            onClick={() => exporter(CATEGORIE_INVITE, "excel")}
+          >
+            Excel
+          </button>
+        </div>
+      </div>
+      <div className="export-buttons-group">
+        <span className="field-hint">Mes encaissements — comité ({nbComite})</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-primary btn-compact"
+            onClick={() => exporter(CATEGORIE_COMITE, "pdf")}
+          >
+            PDF
+          </button>
+          <button
+            className="btn btn-primary btn-compact"
+            onClick={() => exporter(CATEGORIE_COMITE, "excel")}
+          >
+            Excel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function TablePersonnesServies({ personnes, caissier, onChange }) {
   return (
     <SectionRepliable
       titre="Personnes ayant déjà payé"
@@ -247,6 +368,7 @@ function TablePersonnesServies({ personnes }) {
                   <th key={t.id}>{t.id === "comite" ? "Comité" : t.label}</th>
                 ))}
                 <th>Statut</th>
+                <th>Invitation</th>
                 <th style={{ textAlign: "right" }}>Total payé</th>
                 <th>Amené par</th>
               </tr>
@@ -286,6 +408,13 @@ function TablePersonnesServies({ personnes }) {
                     >
                       {personne.statutGlobal}
                     </span>
+                  </td>
+                  <td>
+                    <CelluleInvitation
+                      personne={personne}
+                      utilisateur={caissier}
+                      onChange={onChange}
+                    />
                   </td>
                   <td className="ledger-amount in" style={{ textAlign: "right" }}>
                     {personne.totalGeneral.toFixed(2)} $

@@ -17,6 +17,7 @@ import { db, auth, getSecondaryAuth } from "../firebase";
 import { createUserWithEmailAndPassword, signOut, sendPasswordResetEmail, updateProfile } from "firebase/auth";
 import { getTypeFrais, TYPES_FRAIS, IDS_FRAIS_INVITE, TOTAL_FRAIS_INVITE } from "../constants/typesFrais";
 import { convertirEnUSD } from "../constants/devises";
+import { STATUTS_INVITATION } from "../constants/invitation";
 import { envoyerEmailConfirmation, envoyerMessageUnique, envoyerEmailActivationCompte } from "./emailService";
 
 const personnesRef = collection(db, "personnes");
@@ -50,6 +51,25 @@ export async function creerPersonne({ nom, email }) {
     createdAt: serverTimestamp(),
   });
   return { id: docRef.id, nom, email };
+}
+
+// Marque l'invitation d'une personne comme remise. Action volontairement
+// irréversible et tracée : elle constate un billet physiquement donné.
+// Ouverte au caissier, au président et au CP en plus des admins — ce sont eux
+// qui remettent les billets sur le terrain (voir firestore.rules).
+export async function marquerInvitationDistribuee({ personneId, personneNom, utilisateur }) {
+  await updateDoc(doc(db, "personnes", personneId), {
+    invitationDistribuee: true,
+    invitationDate: serverTimestamp(),
+    invitationParEmail: utilisateur.email,
+  });
+
+  await logAudit({
+    utilisateur,
+    typeAction: "modification",
+    cible: `invitation de ${personneNom}`,
+    details: "Invitation remise à la personne.",
+  });
 }
 
 // ---------- Paiements ----------
@@ -754,6 +774,19 @@ function construireLignePersonne(personne, totauxParFrais = {}, amenePar = "") {
 
   const categorie = (totauxParFrais.comite || 0) > 0 ? "Membre du comité" : "Étudiant / invité";
 
+  // Invitation (billet d'entrée) : elle se mérite en soldant l'entrée, c'est-à-dire
+  // les 10 $ de fête pour un invité, ou les 30 $ de frais pour un membre du comité —
+  // exactement les deux cas où l'e-mail de confirmation annonce déjà un billet à
+  // retirer. Trois états : rien à donner, à donner, déjà donnée.
+  const entreeSoldee =
+    detailFrais.find((f) => f.id === "fete")?.statut === "Soldé" ||
+    detailFrais.find((f) => f.id === "comite")?.statut === "Soldé";
+  const statutInvitation = personne.invitationDistribuee === true
+    ? STATUTS_INVITATION.DISTRIBUEE
+    : entreeSoldee
+    ? STATUTS_INVITATION.A_DONNER
+    : STATUTS_INVITATION.INDISPONIBLE;
+
   // Le statut global ne regarde QUE les frais qui concernent la personne :
   // un invité soldé à 20 $ est en règle même s'il n'a pas payé les 30 $ du
   // comité, qui ne le concernent pas.
@@ -767,7 +800,15 @@ function construireLignePersonne(personne, totauxParFrais = {}, amenePar = "") {
     ? "Partiel"
     : "Aucun";
 
-  return { ...personne, detailFrais, totalGeneral, categorie, statutGlobal, amenePar };
+  return {
+    ...personne,
+    detailFrais,
+    totalGeneral,
+    categorie,
+    statutGlobal,
+    statutInvitation,
+    amenePar,
+  };
 }
 
 export async function listerPersonnesAvecPaiements() {

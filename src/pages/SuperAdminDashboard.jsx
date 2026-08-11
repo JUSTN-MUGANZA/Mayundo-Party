@@ -84,7 +84,7 @@ export default function SuperAdminDashboard() {
       </section>
 
       <section id="rapport-personnes" className="dashboard-section-anchor">
-        <RapportPersonnes superAdmin={user} />
+        <RapportPersonnes superAdmin={user} utilisateur={user} />
       </section>
 
       <section id="demandes-correction" className="dashboard-section-anchor">
