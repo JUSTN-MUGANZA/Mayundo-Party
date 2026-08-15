@@ -109,6 +109,15 @@ export async function listerPaiementsRecents(max = 20) {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
+// Historique COMPLET des encaissements, sans limite de nombre — les rôles de
+// consultation qui contrôlent les comptes ont besoin de tout voir, pas
+// seulement des dernières opérations. Le tableau qui l'affiche reste replié
+// (SectionRepliable), donc les lignes ne sont rendues qu'à la demande.
+export async function listerTousLesPaiements() {
+  const snap = await getDocs(query(paiementsRef, orderBy("createdAt", "desc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 // Historique d'UN SEUL caissier — utilisé dans son propre espace, pour qu'il
 // ne voie jamais les opérations enregistrées par d'autres caissiers.
 // Tri côté client pour éviter l'index composite caissierId + createdAt
@@ -472,6 +481,12 @@ export async function listerSortiesRecentes(max = 20) {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
+// Toutes les sorties de caisse — même usage que listerTousLesPaiements.
+export async function listerToutesLesSorties() {
+  const snap = await getDocs(query(sortiesRef, orderBy("createdAt", "desc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 // Historique d'UN SEUL caissier — mêmes raisons que listerMesPaiementsRecents.
 // Tri côté client pour éviter l'index composite (même raison que pour les paiements).
 export async function listerMesSortiesRecentes(caissierId, max = 20) {
@@ -668,6 +683,17 @@ export async function calculerVueEnsemble({ caissierId = null } = {}) {
     getDocs(sortiesQuery),
   ]);
 
+  return agregerVueEnsemble(
+    paiementsSnap.docs.map((d) => d.data()),
+    sortiesSnap.docs.map((d) => d.data())
+  );
+}
+
+// Même calcul, mais à partir d'opérations DÉJÀ chargées. Séparé de
+// calculerVueEnsemble pour qu'un écran qui affiche le détail des paiements et
+// des sorties puisse en tirer les totaux sans relire les deux collections une
+// seconde fois — sans serveur, chaque relecture coûte un quota Firestore.
+export function agregerVueEnsemble(paiements, sorties) {
   let totalEncaisse = 0;
   let totalFete = 0;
   let totalTshirt = 0;
@@ -676,8 +702,7 @@ export async function calculerVueEnsemble({ caissierId = null } = {}) {
   let totalSorties = 0;
   const parCaissier = {};
 
-  paiementsSnap.forEach((d) => {
-    const p = d.data();
+  paiements.forEach((p) => {
     const montant = montantEffectifUSD(p);
     totalEncaisse += montant;
 
@@ -690,8 +715,8 @@ export async function calculerVueEnsemble({ caissierId = null } = {}) {
     parCaissier[cle] = (parCaissier[cle] || 0) + montant;
   });
 
-  sortiesSnap.forEach((d) => {
-    totalSorties += montantEffectifUSD(d.data());
+  sorties.forEach((s) => {
+    totalSorties += montantEffectifUSD(s);
   });
 
   return {

@@ -25,7 +25,26 @@ async function chargerRapport() {
 
 // Passe superAdmin = { uid, email } depuis l'espace super admin pour activer
 // le bouton de suppression complète d'une personne — non affiché ailleurs.
-export default function RapportPersonnes({ superAdmin, utilisateur }) {
+//
+// lectureSeule = true : le tableau et ses filtres restent identiques, mais tout
+// ce qui SORT une donnée de l'application ou la modifie disparaît (exports
+// Excel/PDF, remise d'invitation). C'est le mode du membre du comité, qui
+// consulte sans jamais agir.
+//
+// personnes / totauxCategorie : à passer quand l'écran appelant a DÉJÀ chargé
+// ces données (page du membre du comité, où trois sections partagent la même
+// liste). Sans serveur, chaque chargement relit toutes les collections
+// "personnes" et "paiements" : mieux vaut ne le faire qu'une fois par page.
+// Props absentes = le composant se charge tout seul, comme partout ailleurs.
+export default function RapportPersonnes({
+  superAdmin,
+  utilisateur,
+  lectureSeule = false,
+  personnes: personnesFournies,
+  totauxCategorie: totauxCategorieFournis,
+  onRafraichir,
+}) {
+  const chargementAutonome = personnesFournies === undefined;
   const [donnees, setDonnees] = useState(null);
   const [filtreCategorie, setFiltreCategorie] = useState("toutes");
   const [filtreFrais, setFiltreFrais] = useState("tous");
@@ -33,11 +52,15 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
   const [recherche, setRecherche] = useState("");
   const [confirmationSuppression, setConfirmationSuppression] = useState(null);
 
-  const chargement = donnees === null;
-  const personnes = useMemo(() => donnees?.personnes || [], [donnees]);
-  const totauxCategorie = donnees?.totauxCategorie;
+  const chargement = chargementAutonome ? donnees === null : personnesFournies === null;
+  const personnes = useMemo(
+    () => (chargementAutonome ? donnees?.personnes || [] : personnesFournies || []),
+    [chargementAutonome, donnees, personnesFournies]
+  );
+  const totauxCategorie = chargementAutonome ? donnees?.totauxCategorie : totauxCategorieFournis;
 
   useEffect(() => {
+    if (!chargementAutonome) return undefined;
     let actif = true;
     chargerRapport().then((d) => {
       if (actif) setDonnees(d);
@@ -45,10 +68,11 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
     return () => {
       actif = false;
     };
-  }, []);
+  }, [chargementAutonome]);
 
   async function rafraichir() {
-    setDonnees(await chargerRapport());
+    if (chargementAutonome) setDonnees(await chargerRapport());
+    else await onRafraichir?.();
   }
 
   // Filtres cumulables : catégorie, frais concerné, état de l'invitation, nom.
@@ -100,8 +124,9 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
     <div className="card">
       <h2>Personnes ayant payé</h2>
       <p className="card-hint">
-        Vue d'ensemble de qui est en règle avec les frais, avec la répartition membres du comité /
-        étudiants, exportable en Excel ou PDF.
+        {lectureSeule
+          ? "Qui est en règle avec les frais, avec la répartition membres du comité / étudiants. Consultation uniquement."
+          : "Vue d'ensemble de qui est en règle avec les frais, avec la répartition membres du comité / étudiants, exportable en Excel ou PDF."}
       </p>
 
       {totauxCategorie && (
@@ -117,47 +142,49 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
         </div>
       )}
 
-      <div className="export-buttons-grid">
-        <div className="export-buttons-group">
-          <span className="field-hint">
-            Étudiants / invités <em>(sans la colonne comité)</em>
-          </span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "excel")}>
-              Excel
-            </button>
-            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "pdf")}>
-              PDF
-            </button>
+      {!lectureSeule && (
+        <div className="export-buttons-grid">
+          <div className="export-buttons-group">
+            <span className="field-hint">
+              Étudiants / invités <em>(sans la colonne comité)</em>
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "excel")}>
+                Excel
+              </button>
+              <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_INVITE, "pdf")}>
+                PDF
+              </button>
+            </div>
+          </div>
+          <div className="export-buttons-group">
+            <span className="field-hint">
+              Membres du comité <em>(sans fête / t-shirt / défense)</em>
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "excel")}>
+                Excel
+              </button>
+              <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "pdf")}>
+                PDF
+              </button>
+            </div>
+          </div>
+          <div className="export-buttons-group">
+            <span className="field-hint">
+              Export général <em>(toutes colonnes, en paysage)</em>
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "excel")}>
+                Excel
+              </button>
+              <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "pdf")}>
+                PDF
+              </button>
+            </div>
           </div>
         </div>
-        <div className="export-buttons-group">
-          <span className="field-hint">
-            Membres du comité <em>(sans fête / t-shirt / défense)</em>
-          </span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "excel")}>
-              Excel
-            </button>
-            <button className="btn btn-primary" onClick={() => exporterCategorie(CATEGORIE_COMITE, "pdf")}>
-              PDF
-            </button>
-          </div>
-        </div>
-        <div className="export-buttons-group">
-          <span className="field-hint">
-            Export général <em>(toutes colonnes, en paysage)</em>
-          </span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "excel")}>
-              Excel
-            </button>
-            <button className="btn btn-primary" onClick={() => exporterCategorie("toutes", "pdf")}>
-              PDF
-            </button>
-          </div>
-        </div>
-      </div>
+      )}
 
       <div className="form-row" style={{ marginBottom: 8 }}>
         <label className="field">
@@ -200,18 +227,24 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
         </label>
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("excel")}>
-          Exporter l'affichage filtré (Excel)
-        </button>
-        <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("pdf")}>
-          Exporter l'affichage filtré (PDF)
-        </button>
-      </div>
+      {!lectureSeule && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("excel")}>
+            Exporter l'affichage filtré (Excel)
+          </button>
+          <button className="btn btn-primary btn-compact" onClick={() => exporterAffichage("pdf")}>
+            Exporter l'affichage filtré (PDF)
+          </button>
+        </div>
+      )}
 
       <SectionRepliable
         titre="Détail des personnes"
-        sousTitre="Le tableau complet reste replié : avec plusieurs centaines de payeurs, il n'a d'intérêt qu'au moment de le consulter. Les exports ci-dessus fonctionnent sans l'ouvrir."
+        sousTitre={
+          lectureSeule
+            ? "Le tableau complet reste replié : avec plusieurs centaines de payeurs, il n'a d'intérêt qu'au moment de le consulter. Utilise les filtres ci-dessus pour retrouver quelqu'un."
+            : "Le tableau complet reste replié : avec plusieurs centaines de payeurs, il n'a d'intérêt qu'au moment de le consulter. Les exports ci-dessus fonctionnent sans l'ouvrir."
+        }
         nombre={personnesFiltrees.length}
       >
       {chargement ? (
@@ -270,7 +303,7 @@ export default function RapportPersonnes({ superAdmin, utilisateur }) {
                     <CelluleInvitation
                       personne={p}
                       utilisateur={utilisateur || superAdmin}
-                      peutDonner={Boolean(utilisateur || superAdmin)}
+                      peutDonner={!lectureSeule && Boolean(utilisateur || superAdmin)}
                       onChange={rafraichir}
                     />
                   </td>

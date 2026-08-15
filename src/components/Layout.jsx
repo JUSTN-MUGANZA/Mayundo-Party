@@ -67,8 +67,13 @@ export default function Layout({
         ];
       case "membre":
         return [
+          { to: "/consultation#vue-ensemble", label: "Vue d'ensemble" },
+          { to: "/consultation#par-caissier", label: "Par caissier" },
+          { to: "/consultation#paiements", label: "Paiements" },
+          { to: "/consultation#sorties", label: "Sorties" },
+          { to: "/consultation#rapport-personnes", label: "Qui a payé" },
+          { to: "/consultation#invitations", label: "Invitations" },
           { to: "/consultation#statut-comite", label: "Statut comité" },
-          { to: "/consultation#liste-comite", label: "Liste des membres" },
         ];
       default:
         return [];
